@@ -1,3 +1,19 @@
+import sys
+import os
+
+# 1. 파이썬이 라이브러리를 찾는 모든 가능성 있는 경로를 강제로 추가
+paths = [
+    r"C:\Users\장덕진\AppData\Local\Programs\Python\Python313\Lib\site-packages",
+    r"C:\Users\장덕진\AppData\Roaming\Python\Python313\site-packages",
+    os.path.join(os.getcwd(), ".venv", "Lib", "site-packages")
+]
+
+for p in paths:
+    if p not in sys.path:
+        sys.path.append(p)
+
+# 이제서야 원래 코드 시작
+
 import streamlit as st
 import os
 import requests
