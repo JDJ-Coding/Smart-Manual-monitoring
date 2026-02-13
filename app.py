@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import shutil
 import time
-import google.generativeai as genai  # Keep a single Gemini SDK import
+import google.generativeai as genai
 import hashlib
 import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
