@@ -6,14 +6,14 @@ import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
 GEMINI_MODEL = "gemini-2.0-flash"
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_cache")
@@ -151,14 +151,19 @@ for d in [MANUAL_DIR, CACHE_DIR]:
 
 @st.cache_resource
 def get_embeddings():
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
-    if not api_key:
-        st.error("환경변수 `MY_API_KEY_GOOGLE`이 설정되지 않았습니다.")
+    try:
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except Exception as e:
+        st.error(
+            "Hugging Face 임베딩 초기화에 실패했습니다. "
+            "`sentence-transformers` 설치 후 다시 실행하세요.\n\n"
+            f"오류: {e}"
+        )
         st.stop()
-    return GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=api_key,
-    )
 
 
 def load_manual_db():
