@@ -1,491 +1,264 @@
 import streamlit as st
 import os
+import requests
+import json
 import shutil
-import time
-from google import genai
+import time  # time 모듈 추가
+import streamlit.components.v1 as components 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
-# ──────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
-GEMINI_MODEL = "gemini-2.0-flash"
-EMBEDDING_MODEL = "models/text-embedding-004"
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
-MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_cache")
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 300
-SEARCH_K = 10
+# --- [1. 기본 설정] ---
+st.set_page_config(page_title="설비 매뉴얼 챗봇", layout="wide", page_icon="🏭")
+ADMIN_PASSWORD = "posco" 
 
-# ──────────────────────────────────────────────
-# Page Config
-# ──────────────────────────────────────────────
-st.set_page_config(
-    page_title="Smart Manual Assistant",
-    layout="wide",
-    page_icon="\u2699\ufe0f",
-)
-
-# ──────────────────────────────────────────────
-# CSS Styling
-# ──────────────────────────────────────────────
+# --- [2. CSS 스타일] ---
 st.markdown("""
-<style>
-    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
-
-    /* Global */
-    .stApp {
-        font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif;
-    }
-
-    /* Main content */
-    .main .block-container {
-        max-width: 880px !important;
-        padding: 1.5rem 1rem 160px 1rem !important;
-    }
-
-    /* Chat input bottom bar */
-    div[data-testid="stBottom"] {
-        background: linear-gradient(to top, #ffffff 85%, rgba(255,255,255,0)) !important;
-        border-top: none !important;
-        padding-top: 0.5rem !important;
-    }
-
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background-color: #111827;
-    }
-    section[data-testid="stSidebar"] .stMarkdown,
-    section[data-testid="stSidebar"] .stMarkdown p,
-    section[data-testid="stSidebar"] .stMarkdown li {
-        color: #d1d5db;
-    }
-    section[data-testid="stSidebar"] .stMarkdown h1,
-    section[data-testid="stSidebar"] .stMarkdown h2,
-    section[data-testid="stSidebar"] .stMarkdown h3 {
-        color: #f9fafb;
-    }
-    section[data-testid="stSidebar"] label {
-        color: #9ca3af !important;
-    }
-    section[data-testid="stSidebar"] .stDivider {
-        border-color: rgba(255,255,255,0.08);
-    }
-
-    /* Chat bubbles */
-    div[data-testid="stChatMessage"] {
-        border-radius: 12px;
-        margin-bottom: 0.4rem;
-        padding: 0.75rem 1rem;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.04);
-    }
-
-    /* Source citation */
-    .source-box {
-        background: linear-gradient(135deg, #eff6ff, #f0fdf4);
-        border-left: 4px solid #3b82f6;
-        border-radius: 6px;
-        padding: 0.75rem 1rem;
-        margin-top: 0.75rem;
-        font-size: 0.85rem;
-        color: #374151;
-    }
-    .source-box strong { color: #1e40af; }
-
-    /* Welcome */
-    .welcome-wrap {
-        text-align: center;
-        margin-top: 13vh;
-        animation: fadeUp 0.6s ease-out;
-    }
-    @keyframes fadeUp {
-        from { opacity: 0; transform: translateY(16px); }
-        to   { opacity: 1; transform: translateY(0); }
-    }
-    .welcome-icon { font-size: 3.2rem; margin-bottom: 0.6rem; }
-    .welcome-title {
-        font-size: 2rem; font-weight: 800; color: #111827;
-        margin-bottom: 0.3rem;
-    }
-    .welcome-sub {
-        font-size: 1.05rem; color: #6b7280; margin-bottom: 2rem;
-        line-height: 1.6;
-    }
-    .chip-row {
-        display: flex; flex-wrap: wrap; justify-content: center;
-        gap: 0.5rem; max-width: 620px; margin: 0 auto;
-    }
-    .chip {
-        background: #fff; border: 1px solid #e5e7eb; border-radius: 999px;
-        padding: 0.45rem 1rem; font-size: 0.88rem; color: #374151;
-        transition: all 0.2s;
-    }
-    .chip:hover {
-        border-color: #3b82f6; color: #2563eb;
-        box-shadow: 0 2px 8px rgba(59,130,246,0.12);
-    }
-
-    /* Scrollbar */
-    ::-webkit-scrollbar { width: 7px; }
-    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-
-    /* Expander */
-    .streamlit-expanderHeader { font-size: 0.85rem; color: #6b7280; }
-</style>
+    <style>
+    .stApp { font-family: 'Pretendard', sans-serif; }
+    div[data-testid="stAppViewContainer"] { overflow-y: auto !important; overflow-x: hidden !important; height: 100vh !important; }
+    .main .block-container { padding-bottom: 150px !important; max-width: 100% !important; }
+    div[data-testid="stBottom"] { background-color: white !important; z-index: 99999; border-top: 1px solid #ddd; }
+    ::-webkit-scrollbar { width: 12px !important; display: block !important; }
+    ::-webkit-scrollbar-thumb { background-color: #bbb; border-radius: 6px; }
+    .stTextArea textarea { font-family: 'Courier New', monospace; font-size: 0.9rem; background-color: #f8f9fa; }
+    </style>
 """, unsafe_allow_html=True)
 
-# ──────────────────────────────────────────────
-# Directory Setup
-# ──────────────────────────────────────────────
+# --- [3. 경로 설정] ---
+DB_PATH = "manual_db"
+MANUAL_DIR = "./manuals"
+CACHE_DIR = "./manual_cache"
 for d in [MANUAL_DIR, CACHE_DIR]:
-    os.makedirs(d, exist_ok=True)
+    if not os.path.exists(d): os.makedirs(d)
 
-# ──────────────────────────────────────────────
-# Core Functions
-# ──────────────────────────────────────────────
-
+# --- [4. 함수 로직] ---
 @st.cache_resource
 def get_embeddings():
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
-    if not api_key:
-        st.error("환경변수 `MY_API_KEY_GOOGLE`이 설정되지 않았습니다.")
-        st.stop()
-    return GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=api_key,
-    )
-
+    return HuggingFaceEmbeddings(model_name="./model")
 
 def load_manual_db():
     embeddings = get_embeddings()
     if os.path.exists(DB_PATH):
         try:
             return FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
-        except Exception as e:
-            st.warning(f"벡터 DB 로드 오류: {e}")
+        except:
             return None
     return None
 
-
 def update_vector_db():
     embeddings = get_embeddings()
+    
+    # ★ [중요] 표 인식을 위해 Chunk Size 대폭 증가
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        separators=["\n\n", "\n", " ", ""],
+        chunk_size=1200, 
+        chunk_overlap=300,
+        separators=["\n\n", "\n", " ", ""]
     )
-
-    current_files = [f for f in os.listdir(MANUAL_DIR) if f.lower().endswith(".pdf")]
-
-    # Clean caches for deleted files
-    if os.path.exists(CACHE_DIR):
-        for c in os.listdir(CACHE_DIR):
-            if c not in current_files:
-                shutil.rmtree(os.path.join(CACHE_DIR, c), ignore_errors=True)
-
-    files_to_process = [
-        f for f in current_files
-        if not os.path.exists(os.path.join(CACHE_DIR, f))
-    ]
-
+    
+    current_files = [f for f in os.listdir(MANUAL_DIR) if f.endswith(".pdf")]
+    
+    # 기존 캐시 중 삭제된 파일 정리
+    cached = os.listdir(CACHE_DIR)
+    for c in cached:
+        if c not in current_files: 
+            shutil.rmtree(os.path.join(CACHE_DIR, c), ignore_errors=True)
+            
+    files_to_process = [f for f in current_files if not os.path.exists(os.path.join(CACHE_DIR, f))]
+    
     if files_to_process:
         bar = st.sidebar.progress(0)
         status = st.sidebar.empty()
         for idx, f in enumerate(files_to_process):
-            status.text(f"처리 중: {f}")
+            status.text(f"학습 중... {f}")
             try:
                 loader = PyPDFLoader(os.path.join(MANUAL_DIR, f))
                 docs = loader.load_and_split(text_splitter)
                 for doc in docs:
-                    doc.metadata["source"] = f
-                    if "page" in doc.metadata:
-                        doc.metadata["page"] += 1
+                    doc.metadata["source"] = f 
+                    if "page" in doc.metadata: doc.metadata["page"] += 1
+                
                 if docs:
                     temp_db = FAISS.from_documents(docs, embeddings)
                     temp_db.save_local(os.path.join(CACHE_DIR, f))
             except Exception as e:
-                st.error(f"PDF 처리 오류 ({f}): {e}")
+                st.error(f"오류 ({f}): {e}")
             bar.progress((idx + 1) / len(files_to_process))
         bar.empty()
         status.empty()
 
-    # Merge all caches into a single DB
-    valid_caches = [
-        f for f in os.listdir(CACHE_DIR)
-        if os.path.isdir(os.path.join(CACHE_DIR, f))
-    ]
+    # DB 병합
+    valid_caches = [f for f in os.listdir(CACHE_DIR) if os.path.isdir(os.path.join(CACHE_DIR, f))]
     if not valid_caches:
-        if os.path.exists(DB_PATH):
-            shutil.rmtree(DB_PATH, ignore_errors=True)
+        if os.path.exists(DB_PATH): shutil.rmtree(DB_PATH, ignore_errors=True)
         return
 
-    base_db = FAISS.load_local(
-        os.path.join(CACHE_DIR, valid_caches[0]), embeddings,
-        allow_dangerous_deserialization=True,
-    )
+    base_db = FAISS.load_local(os.path.join(CACHE_DIR, valid_caches[0]), embeddings, allow_dangerous_deserialization=True)
     for cache_name in valid_caches[1:]:
-        sub_db = FAISS.load_local(
-            os.path.join(CACHE_DIR, cache_name), embeddings,
-            allow_dangerous_deserialization=True,
-        )
+        sub_db = FAISS.load_local(os.path.join(CACHE_DIR, cache_name), embeddings, allow_dangerous_deserialization=True)
         base_db.merge_from(sub_db)
     base_db.save_local(DB_PATH)
 
-
-def ask_gemini(context: str, user_input: str) -> str:
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
-    if not api_key:
-        return (
-            "**API 키 오류**\n\n"
-            "환경변수 `MY_API_KEY_GOOGLE`이 설정되지 않았습니다.\n\n"
-            "```bash\nexport MY_API_KEY_GOOGLE=your_key\n```"
-        )
-
-    prompt = f"""당신은 산업 설비 유지보수 전문가입니다.
-사용자는 설비의 알람 코드나 고장 증상에 대해 묻고 있습니다.
-
-아래 [매뉴얼 내용]을 분석하여 답변하세요.
-- 내용이 표(Table) 형태로 되어 있다면 행/열을 주의 깊게 연결하여 해석하세요.
-- '알람 코드', '원인', '조치 방법'을 명확히 구분해서 설명하세요.
-- 내용에 없는 사실은 지어내지 마세요.
-- 답변은 한국어로 작성하세요.
-
-[매뉴얼 내용]
-{context}
-
-[질문]
-{user_input}
-
-[답변 형식]
-1. 증상/알람 의미: (간략 설명)
-2. 원인 및 조치 방법: (번호 매겨서 상세 설명)
-3. 참고 문서: (파일명, 페이지)"""
-
+def ask_posco_gpt(context, user_input):
+    api_key = os.environ.get("POSCO_GPT_KEY")
+    url = "http://aigpt.posco.net/gpgpta01-gpt/gptApi/personalApi"
+    
+    # ★ 프롬프트 강화
+    prompt = f"""
+    당신은 포스코 퓨처엠 설비 유지보수 전문가입니다.
+    사용자는 설비의 알람 코드나 고장 증상에 대해 묻고 있습니다.
+    
+    아래 [매뉴얼 내용]을 분석하여 답변하세요.
+    - 내용이 표(Table) 형태로 되어 있다면 행/열을 주의 깊게 연결하여 해석하세요.
+    - '알람 코드', '원인', '조치 방법'을 명확히 구분해서 설명하세요.
+    - 내용에 없는 사실은 지어내지 마세요.
+    
+    [매뉴얼 내용]
+    {context}
+    
+    [질문]
+    {user_input}
+    
+    [답변 형식]
+    1. 🚨 증상/알람 의미: (간략 설명)
+    2. 🛠️ 원인 및 조치 방법: (번호 매겨서 상세 설명)
+    3. 📄 참고 문서: (파일명, 페이지)
+    """
+    
+    payload = {"messages": [{"role": "user", "content": prompt}], "model": "gpt-5-chat-latest"}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-        )
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
         return response.text
     except Exception as e:
-        return f"**Gemini API 오류:** {str(e)}"
+        return f"GPT Error: {str(e)}"
 
+def scroll_to_bottom():
+    js = """<script>
+        var body = window.parent.document.querySelector(".main");
+        if (body) { body.scrollTop = body.scrollHeight; }
+    </script>"""
+    components.html(js, height=0, width=0)
 
-# ──────────────────────────────────────────────
-# Sidebar
-# ──────────────────────────────────────────────
+# --- [5. 사이드바 (여기에 에러 수정됨)] ---
 with st.sidebar:
-    # Branding
-    st.markdown("""
-        <div style="text-align:center; padding:1rem 0 0.4rem 0;">
-            <div style="font-size:2.2rem;">&#9881;&#65039;</div>
-            <div style="font-size:1.15rem; font-weight:700; color:#f9fafb;">Smart Manual</div>
-            <div style="font-size:0.72rem; color:#6b7280; margin-top:2px;">v2.0 &middot; Powered by Gemini</div>
-        </div>
-    """, unsafe_allow_html=True)
-    st.divider()
-
-    # Search scope
-    st.markdown("##### 검색 설정")
-    file_list = sorted([f for f in os.listdir(MANUAL_DIR) if f.lower().endswith(".pdf")])
+    st.header("⚙️ 설정")
+    file_list = [f for f in os.listdir(MANUAL_DIR) if f.endswith(".pdf")]
     search_options = ["전체 매뉴얼 검색"] + file_list
-    selected_manual = st.selectbox(
-        "검색 대상", search_options, index=0,
-        help="특정 매뉴얼만 검색하려면 선택하세요.",
-    )
+    selected_manual = st.selectbox("검색 대상 선택", search_options, index=0)
+    
     st.divider()
-
-    # Admin section
-    if "is_admin" not in st.session_state:
-        st.session_state.is_admin = False
-
+    
+    if "is_admin" not in st.session_state: st.session_state.is_admin = False
+    
+    # ★ 에러 해결: key="admin_login_pw" 추가하여 고유 ID 부여
     if not st.session_state.is_admin:
-        st.markdown("##### 관리자")
-        admin_pw = st.text_input(
-            "비밀번호", type="password", key="admin_login_pw",
-            placeholder="관리자 비밀번호",
-        )
-        if admin_pw == ADMIN_PASSWORD and admin_pw != "":
+        if st.text_input("관리자 암호", type="password", key="admin_login_pw") == ADMIN_PASSWORD:
             st.session_state.is_admin = True
             st.rerun()
-
+    
     if st.session_state.is_admin:
-        st.success("관리자 모드 활성화")
-
-        # PDF upload
-        st.markdown("##### 매뉴얼 관리")
-        uploaded = st.file_uploader(
-            "PDF 업로드", type=["pdf"], accept_multiple_files=True,
-            key="pdf_uploader", help="매뉴얼 PDF를 드래그하거나 클릭하여 업로드",
-        )
-        if uploaded:
-            for uf in uploaded:
-                with open(os.path.join(MANUAL_DIR, uf.name), "wb") as wf:
-                    wf.write(uf.getbuffer())
-            st.success(f"{len(uploaded)}개 파일 업로드 완료")
-            time.sleep(1)
-            st.rerun()
-
-        # File list
-        if file_list:
-            st.caption(f"등록된 매뉴얼 ({len(file_list)}개)")
-            for f in file_list:
-                c1, c2 = st.columns([0.85, 0.15])
-                c1.markdown(f"<small style='color:#d1d5db'>{f}</small>", unsafe_allow_html=True)
-                if c2.button("\u2715", key=f"del_{f}", help=f"{f} 삭제"):
-                    os.remove(os.path.join(MANUAL_DIR, f))
-                    cache_path = os.path.join(CACHE_DIR, f)
-                    if os.path.exists(cache_path):
-                        shutil.rmtree(cache_path)
-                    st.rerun()
-        else:
-            st.info("등록된 매뉴얼이 없습니다.")
-
+        st.success("🔓 관리자 모드")
+        st.subheader("파일 관리")
+        for f in file_list:
+            c1, c2 = st.columns([0.8, 0.2])
+            c1.text(f"{f}")
+            if c2.button("x", key=f"del_{f}"): # key에 파일명 붙여서 고유화
+                os.remove(os.path.join(MANUAL_DIR, f))
+                if os.path.exists(os.path.join(CACHE_DIR, f)):
+                    shutil.rmtree(os.path.join(CACHE_DIR, f))
+                st.rerun()
+        
         st.markdown("---")
-
-        # DB rebuild
-        if st.button("DB 전체 재구축", type="primary", use_container_width=True):
-            with st.status("데이터베이스 재구축 중...", expanded=True) as status_box:
-                st.write("기존 데이터 삭제 중...")
-                if os.path.exists(CACHE_DIR):
-                    shutil.rmtree(CACHE_DIR)
-                if os.path.exists(DB_PATH):
-                    shutil.rmtree(DB_PATH)
+        # ★ [초기화 및 재학습 버튼]
+        if st.button("🔄 DB 전체 초기화 및 재학습", type="primary", use_container_width=True):
+            with st.status("데이터베이스 재구축 중...", expanded=True) as status:
+                st.write("1. 기존 데이터 삭제 중...")
+                if os.path.exists(CACHE_DIR): shutil.rmtree(CACHE_DIR)
+                if os.path.exists(DB_PATH): shutil.rmtree(DB_PATH)
                 os.makedirs(CACHE_DIR, exist_ok=True)
-                st.write("벡터 DB 구축 중...")
+                
+                st.write("2. 새로운 설정(Chunk 1200)으로 학습 시작...")
                 update_vector_db()
-                status_box.update(label="재구축 완료!", state="complete", expanded=False)
-            st.success("학습 완료!")
+                status.update(label="완료!", state="complete", expanded=False)
+            
+            st.success("재학습 완료! 이제 질문해보세요.")
             time.sleep(1.5)
             st.rerun()
-
-        if st.button("로그아웃", use_container_width=True):
+            
+        if st.button("🚪 로그아웃"):
             st.session_state.is_admin = False
             st.rerun()
 
     st.divider()
-
-    # DB status
-    db_exists = os.path.exists(DB_PATH)
-    if db_exists:
-        st.markdown("**DB 상태:** <span style='color:#34d399'>정상</span>", unsafe_allow_html=True)
-    else:
-        st.markdown("**DB 상태:** <span style='color:#f87171'>미구축</span>", unsafe_allow_html=True)
-
-    # Clear chat
-    if st.button("대화 초기화", use_container_width=True):
+    if st.button("🧹 대화 내용 지우기", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
 
-    # API key warning
-    if not os.environ.get("MY_API_KEY_GOOGLE"):
-        st.warning("Gemini API 키 미설정\n\n`export MY_API_KEY_GOOGLE=키`")
+# --- [6. 메인 로직] ---
+if "messages" not in st.session_state: st.session_state.messages = []
 
-
-# ──────────────────────────────────────────────
-# Main Chat Area
-# ──────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Welcome screen
 if len(st.session_state.messages) == 0:
     st.markdown("""
-        <div class="welcome-wrap">
-            <div class="welcome-icon">&#9881;&#65039;</div>
-            <div class="welcome-title">Smart Manual Assistant</div>
-            <div class="welcome-sub">
-                설비 매뉴얼 기반 AI 질의응답 시스템<br>
-                알람 코드, 고장 진단, 유지보수 절차를 물어보세요.
-            </div>
-            <div class="chip-row">
-                <div class="chip">FR-E800 인버터 알람 E.OC1 원인은?</div>
-                <div class="chip">MR-J4 서보 AL.16 조치 방법</div>
-                <div class="chip">파라미터 초기화 절차</div>
-                <div class="chip">과전류 보호 기능 설명</div>
-            </div>
+        <div style="text-align: center; margin-top: 15vh;">
+            <div style="font-size: 5rem; margin-bottom: 20px;">🏭</div>
+            <h1 style="color: #005eb8;">POSCO FUTURE M<br>Smart Assistant</h1>
         </div>
     """, unsafe_allow_html=True)
+else:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"])
 
-# Chat history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if msg["role"] == "assistant" and msg.get("sources"):
-            with st.expander("참조 문서 보기"):
-                for src in msg["sources"]:
-                    st.markdown(f"- {src}")
-
-# Chat input
-if prompt := st.chat_input("설비 관련 질문을 입력하세요..."):
+if prompt := st.chat_input("질문을 입력하세요..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.rerun()
 
-# Process last user message
 if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-    user_question = st.session_state.messages[-1]["content"]
     vectorstore = load_manual_db()
-
-    if not vectorstore:
+    
+    if vectorstore:
         with st.chat_message("assistant"):
-            error_msg = "벡터 DB가 아직 구축되지 않았습니다. 관리자 로그인 후 **DB 전체 재구축** 버튼을 눌러주세요."
-            st.warning(error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": error_msg, "sources": []})
-    else:
-        with st.chat_message("assistant"):
-            with st.spinner("매뉴얼에서 관련 내용을 검색하고 있습니다..."):
-                # Build search kwargs
-                search_kwargs = {"k": SEARCH_K}
+            with st.spinner(f"'{selected_manual}'에서 정밀 검색 중..."):
+                search_kwargs = {}
                 if selected_manual != "전체 매뉴얼 검색":
                     search_kwargs["filter"] = {"source": selected_manual}
-
+                
                 try:
-                    docs = vectorstore.similarity_search(user_question, **search_kwargs)
-                except Exception as e:
-                    st.error(f"검색 오류: {e}")
+                    # 검색 범위 k=10
+                    docs = vectorstore.similarity_search(st.session_state.messages[-1]["content"], k=10, **search_kwargs)
+                except:
                     docs = []
 
                 if not docs:
-                    no_result = f"'{selected_manual}' 범위에서 관련 내용을 찾지 못했습니다. 다른 키워드로 시도해보세요."
-                    st.info(no_result)
-                    st.session_state.messages.append({"role": "assistant", "content": no_result, "sources": []})
-                else:
-                    # Build context
-                    context_parts = []
+                    answer = f"⚠️ '{selected_manual}' 내에서 관련 내용을 찾을 수 없습니다."
+                    full_context = ""
                     sources = []
-                    seen = set()
+                else:
+                    context_parts = []
+                    sources = set()
                     for d in docs:
-                        src = d.metadata.get("source", "Unknown")
-                        page = d.metadata.get("page", 0)
-                        context_parts.append(f"[파일: {src} | p.{page}]\n{d.page_content}")
-                        key = f"{src} (p.{page})"
-                        if key not in seen:
-                            sources.append(key)
-                            seen.add(key)
+                        content = d.page_content 
+                        src = d.metadata.get('source', 'Unknown')
+                        page = d.metadata.get('page', 0)
+                        context_parts.append(f"📄 [파일: {src} | p.{page}]\n{content}")
+                        sources.add(f"{src} (p.{page})")
+                    full_context = "\n\n".join(context_parts)
+                    answer = ask_posco_gpt(full_context, st.session_state.messages[-1]["content"])
+                
+                st.markdown(answer)
+                if sources:
+                    st.divider()
+                    st.caption(f"**📚 참조 문서:** {', '.join(sources)}")
+                    with st.expander("🔍 원문 보기"):
+                        st.text_area("Context", value=full_context, height=200)
+                
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                scroll_to_bottom()
+    else:
+        st.error("학습된 DB가 없습니다. 관리자 로그인 후 DB를 업데이트하세요.")
+        st.session_state.messages.append({"role": "assistant", "content": "DB가 없습니다."})
 
-                    full_context = "\n\n---\n\n".join(context_parts)
-                    answer = ask_gemini(full_context, user_question)
-
-                    st.markdown(answer)
-
-                    if sources:
-                        st.markdown("---")
-                        sources_html = "<br>".join(f"&bull; {s}" for s in sources)
-                        st.markdown(
-                            f'<div class="source-box"><strong>참조 문서</strong><br>{sources_html}</div>',
-                            unsafe_allow_html=True,
-                        )
-                        with st.expander("원문 보기"):
-                            st.code(full_context, language=None)
-
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": sources,
-                    })
+st.markdown("<div style='height: 100px;'></div>", unsafe_allow_html=True)
+if len(st.session_state.messages) > 0: scroll_to_bottom()
