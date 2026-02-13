@@ -2,18 +2,21 @@ import streamlit as st
 import os
 import shutil
 import time
-from google import genai
+import google.generativeai as genai
+import hashlib
+import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # ──────────────────────────────────────────────
 # Configuration
 # ──────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
 GEMINI_MODEL = "gemini-2.0-flash"
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+FALLBACK_EMBED_DIM = 384
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_cache")
@@ -151,14 +154,36 @@ for d in [MANUAL_DIR, CACHE_DIR]:
 
 @st.cache_resource
 def get_embeddings():
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
-    if not api_key:
-        st.error("환경변수 `MY_API_KEY_GOOGLE`이 설정되지 않았습니다.")
-        st.stop()
-    return GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=api_key,
-    )
+    try:
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except Exception as e:
+        st.warning(f"Hugging Face 임베딩 초기화 실패로 로컬 해시 임베딩을 사용합니다: {e}")
+
+        class LocalHashEmbeddings:
+            def __init__(self, dim: int = FALLBACK_EMBED_DIM):
+                self.dim = dim
+
+            def _embed_text(self, text: str):
+                vec = np.zeros(self.dim, dtype=np.float32)
+                for token in text.lower().split():
+                    idx = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dim
+                    vec[idx] += 1.0
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                return vec.tolist()
+
+            def embed_documents(self, texts):
+                return [self._embed_text(t) for t in texts]
+
+            def embed_query(self, text):
+                return self._embed_text(text)
+
+        return LocalHashEmbeddings()
 
 
 def load_manual_db():
@@ -267,11 +292,9 @@ def ask_gemini(context: str, user_input: str) -> str:
 3. 참고 문서: (파일명, 페이지)"""
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-        )
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"**Gemini API 오류:** {str(e)}"

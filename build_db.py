@@ -1,38 +1,64 @@
 """One-time script to build the FAISS vector DB from PDF manuals."""
 import os
 import shutil
+import hashlib
+import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 MANUAL_DIR = os.path.join(BASE, "manuals")
 CACHE_DIR = os.path.join(BASE, "manual_cache")
 DB_PATH = os.path.join(BASE, "manual_db")
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 300
 
 
-def main():
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
-    if not api_key:
-        print("ERROR: MY_API_KEY_GOOGLE environment variable is not set.")
-        print("Run: export MY_API_KEY_GOOGLE=your_key")
-        return
+def get_embeddings():
+    try:
+        print("Initializing Hugging Face embedding model...")
+        return HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except Exception as e:
+        print(f"WARNING: Hugging Face 임베딩 초기화 실패. 로컬 해시 임베딩으로 대체합니다. {e}")
 
+        class LocalHashEmbeddings:
+            def __init__(self, dim: int = 384):
+                self.dim = dim
+
+            def _embed_text(self, text: str):
+                vec = np.zeros(self.dim, dtype=np.float32)
+                for token in text.lower().split():
+                    idx = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dim
+                    vec[idx] += 1.0
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec = vec / norm
+                return vec.tolist()
+
+            def embed_documents(self, texts):
+                return [self._embed_text(t) for t in texts]
+
+            def embed_query(self, text):
+                return self._embed_text(text)
+
+        return LocalHashEmbeddings()
+
+
+def main():
     # Clean old data
     for d in [CACHE_DIR, DB_PATH]:
         if os.path.exists(d):
             shutil.rmtree(d)
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    print("Initializing embedding model...")
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model=EMBEDDING_MODEL,
-        google_api_key=api_key,
-    )
+    embeddings = get_embeddings()
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -49,8 +75,13 @@ def main():
 
     for idx, f in enumerate(pdf_files, 1):
         print(f"[{idx}/{len(pdf_files)}] Processing: {f}")
-        loader = PyPDFLoader(os.path.join(MANUAL_DIR, f))
-        docs = loader.load_and_split(text_splitter)
+        try:
+            loader = PyPDFLoader(os.path.join(MANUAL_DIR, f))
+            docs = loader.load_and_split(text_splitter)
+        except Exception as e:
+            print(f"  -> ERROR: PDF 파싱 실패 ({f}): {e}")
+            continue
+
         for doc in docs:
             doc.metadata["source"] = f
             if "page" in doc.metadata:
