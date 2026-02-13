@@ -3,8 +3,6 @@ import os
 import shutil
 import time
 import google.generativeai as genai
-import hashlib
-import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -16,7 +14,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
 GEMINI_MODEL = "gemini-2.0-flash"
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-FALLBACK_EMBED_DIM = 384
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_cache")
@@ -161,29 +158,12 @@ def get_embeddings():
             encode_kwargs={"normalize_embeddings": True},
         )
     except Exception as e:
-        st.warning(f"Hugging Face 임베딩 초기화 실패로 로컬 해시 임베딩을 사용합니다: {e}")
-
-        class LocalHashEmbeddings:
-            def __init__(self, dim: int = FALLBACK_EMBED_DIM):
-                self.dim = dim
-
-            def _embed_text(self, text: str):
-                vec = np.zeros(self.dim, dtype=np.float32)
-                for token in text.lower().split():
-                    idx = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16) % self.dim
-                    vec[idx] += 1.0
-                norm = np.linalg.norm(vec)
-                if norm > 0:
-                    vec = vec / norm
-                return vec.tolist()
-
-            def embed_documents(self, texts):
-                return [self._embed_text(t) for t in texts]
-
-            def embed_query(self, text):
-                return self._embed_text(text)
-
-        return LocalHashEmbeddings()
+        st.error(
+            "Hugging Face 임베딩 초기화에 실패했습니다. "
+            "`sentence-transformers` 설치 후 다시 실행하세요.\n\n"
+            f"오류: {e}"
+        )
+        st.stop()
 
 
 def load_manual_db():
