@@ -2,7 +2,7 @@ import streamlit as st
 import os
 import shutil
 import time
-from google import genai
+import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -267,11 +267,9 @@ def ask_gemini(context: str, user_input: str) -> str:
 3. 참고 문서: (파일명, 페이지)"""
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-        )
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"**Gemini API 오류:** {str(e)}"
