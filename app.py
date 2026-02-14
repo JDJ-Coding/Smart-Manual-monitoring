@@ -6,7 +6,7 @@ import google.generativeai as genai
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # ──────────────────────────────────────────────
 # Configuration
@@ -16,7 +16,6 @@ GEMINI_MODEL = "gemini-2.0-flash"
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_cache")
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 300
 SEARCH_K = 10
@@ -142,8 +141,7 @@ st.markdown("""
 # ──────────────────────────────────────────────
 # Directory Setup
 # ──────────────────────────────────────────────
-for d in [MANUAL_DIR, CACHE_DIR]:
-    os.makedirs(d, exist_ok=True)
+os.makedirs(MANUAL_DIR, exist_ok=True)
 
 # ──────────────────────────────────────────────
 # Core Functions
@@ -168,9 +166,16 @@ def get_embeddings():
 
 def load_manual_db():
     embeddings = get_embeddings()
-    if os.path.exists(DB_PATH):
+    pkl_path = os.path.join(DB_PATH, "index.pkl")
+
+    if os.path.exists(pkl_path):
         try:
-            return FAISS.load_local(DB_PATH, embeddings, allow_dangerous_deserialization=True)
+            import pickle
+            with open(pkl_path, "rb") as f:
+                serialized = pickle.load(f)
+            return FAISS.deserialize_from_bytes(
+                serialized, embeddings, allow_dangerous_deserialization=True
+            )
         except Exception as e:
             st.warning(f"벡터 DB 로드 오류: {e}")
             return None
@@ -178,6 +183,8 @@ def load_manual_db():
 
 
 def update_vector_db():
+    import pickle
+
     embeddings = get_embeddings()
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
@@ -185,61 +192,49 @@ def update_vector_db():
         separators=["\n\n", "\n", " ", ""],
     )
 
-    current_files = [f for f in os.listdir(MANUAL_DIR) if f.lower().endswith(".pdf")]
-
-    # Clean caches for deleted files
-    if os.path.exists(CACHE_DIR):
-        for c in os.listdir(CACHE_DIR):
-            if c not in current_files:
-                shutil.rmtree(os.path.join(CACHE_DIR, c), ignore_errors=True)
-
-    files_to_process = [
-        f for f in current_files
-        if not os.path.exists(os.path.join(CACHE_DIR, f))
-    ]
-
-    if files_to_process:
-        bar = st.sidebar.progress(0)
-        status = st.sidebar.empty()
-        for idx, f in enumerate(files_to_process):
-            status.text(f"처리 중: {f}")
-            try:
-                loader = PyPDFLoader(os.path.join(MANUAL_DIR, f))
-                docs = loader.load_and_split(text_splitter)
-                for doc in docs:
-                    doc.metadata["source"] = f
-                    if "page" in doc.metadata:
-                        doc.metadata["page"] += 1
-                if docs:
-                    temp_db = FAISS.from_documents(docs, embeddings)
-                    temp_db.save_local(os.path.join(CACHE_DIR, f))
-            except Exception as e:
-                st.error(f"PDF 처리 오류 ({f}): {e}")
-            bar.progress((idx + 1) / len(files_to_process))
-        bar.empty()
-        status.empty()
-
-    # Merge all caches into a single DB
-    valid_caches = [
-        f for f in os.listdir(CACHE_DIR)
-        if os.path.isdir(os.path.join(CACHE_DIR, f))
-    ]
-    if not valid_caches:
+    pdf_files = [f for f in os.listdir(MANUAL_DIR) if f.lower().endswith(".pdf")]
+    if not pdf_files:
         if os.path.exists(DB_PATH):
             shutil.rmtree(DB_PATH, ignore_errors=True)
         return
 
-    base_db = FAISS.load_local(
-        os.path.join(CACHE_DIR, valid_caches[0]), embeddings,
-        allow_dangerous_deserialization=True,
-    )
-    for cache_name in valid_caches[1:]:
-        sub_db = FAISS.load_local(
-            os.path.join(CACHE_DIR, cache_name), embeddings,
-            allow_dangerous_deserialization=True,
-        )
-        base_db.merge_from(sub_db)
-    base_db.save_local(DB_PATH)
+    all_docs = []
+    bar = st.sidebar.progress(0)
+    status = st.sidebar.empty()
+
+    for idx, f in enumerate(pdf_files):
+        status.text(f"처리 중: {f} ({idx + 1}/{len(pdf_files)})")
+        try:
+            loader = PyPDFLoader(os.path.join(MANUAL_DIR, f))
+            docs = loader.load_and_split(text_splitter)
+            for doc in docs:
+                doc.metadata["source"] = f
+                if "page" in doc.metadata:
+                    doc.metadata["page"] += 1
+            if docs:
+                all_docs.extend(docs)
+        except Exception as e:
+            st.error(f"PDF 처리 오류 ({f}): {e}")
+        bar.progress((idx + 1) / len(pdf_files))
+
+    bar.empty()
+    status.empty()
+
+    if not all_docs:
+        if os.path.exists(DB_PATH):
+            shutil.rmtree(DB_PATH, ignore_errors=True)
+        return
+
+    # Create vector DB from all documents
+    status.text("벡터 DB 생성 중...")
+    vectorstore = FAISS.from_documents(all_docs, embeddings)
+
+    # Save using pickle to avoid encoding issues
+    os.makedirs(DB_PATH, exist_ok=True)
+    with open(os.path.join(DB_PATH, "index.pkl"), "wb") as f:
+        pickle.dump(vectorstore.serialize_to_bytes(), f)
+
+    status.empty()
 
 
 def ask_gemini(context: str, user_input: str) -> str:
@@ -343,9 +338,6 @@ with st.sidebar:
                 c1.markdown(f"<small style='color:#d1d5db'>{f}</small>", unsafe_allow_html=True)
                 if c2.button("\u2715", key=f"del_{f}", help=f"{f} 삭제"):
                     os.remove(os.path.join(MANUAL_DIR, f))
-                    cache_path = os.path.join(CACHE_DIR, f)
-                    if os.path.exists(cache_path):
-                        shutil.rmtree(cache_path)
                     st.rerun()
         else:
             st.info("등록된 매뉴얼이 없습니다.")
@@ -356,11 +348,8 @@ with st.sidebar:
         if st.button("DB 전체 재구축", type="primary", use_container_width=True):
             with st.status("데이터베이스 재구축 중...", expanded=True) as status_box:
                 st.write("기존 데이터 삭제 중...")
-                if os.path.exists(CACHE_DIR):
-                    shutil.rmtree(CACHE_DIR)
                 if os.path.exists(DB_PATH):
                     shutil.rmtree(DB_PATH)
-                os.makedirs(CACHE_DIR, exist_ok=True)
                 st.write("벡터 DB 구축 중...")
                 update_vector_db()
                 status_box.update(label="재구축 완료!", state="complete", expanded=False)
