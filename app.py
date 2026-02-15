@@ -2,7 +2,8 @@ import streamlit as st
 import os
 import shutil
 import time
-import google.generativeai as genai
+import requests
+import json
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -12,8 +13,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # Configuration
 # ──────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
-GEMINI_MODEL = "gemini-2.0-flash"
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+POSCO_GPT_URL = "http://aigpt.posco.net/gpgpta01-gpt/gptApi/personalApi"
+POSCO_GPT_MODEL = "gpt-4o"
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-" \
+"v2"
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
 CHUNK_SIZE = 1200
@@ -237,17 +240,18 @@ def update_vector_db():
     status.empty()
 
 
-def ask_gemini(context: str, user_input: str) -> str:
-    api_key = os.environ.get("MY_API_KEY_GOOGLE")
+def ask_posco_gpt(context: str, user_input: str) -> str:
+    api_key = os.environ.get("POSCO_GPT_KEY")
     if not api_key:
         return (
             "**API 키 오류**\n\n"
-            "환경변수 `MY_API_KEY_GOOGLE`이 설정되지 않았습니다.\n\n"
-            "```bash\nexport MY_API_KEY_GOOGLE=your_key\n```"
+            "환경변수 `POSCO_GPT_KEY`가 설정되지 않았습니다.\n\n"
+            "```bash\nexport POSCO_GPT_KEY=your_key\n```"
         )
 
-    prompt = f"""당신은 산업 설비 유지보수 전문가입니다.
-사용자는 설비의 알람 코드나 고장 증상에 대해 묻고 있습니다.
+    system_prompt = "당신은 산업 설비 유지보수 전문가입니다."
+
+    user_prompt = f"""사용자는 설비의 알람 코드나 고장 증상에 대해 묻고 있습니다.
 
 아래 [매뉴얼 내용]을 분석하여 답변하세요.
 - 내용이 표(Table) 형태로 되어 있다면 행/열을 주의 깊게 연결하여 해석하세요.
@@ -267,12 +271,21 @@ def ask_gemini(context: str, user_input: str) -> str:
 3. 참고 문서: (파일명, 페이지)"""
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        response = model.generate_content(prompt)
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "model": POSCO_GPT_MODEL,
+        }
+        response = requests.post(POSCO_GPT_URL, headers=headers, data=json.dumps(payload))
         return response.text
     except Exception as e:
-        return f"**Gemini API 오류:** {str(e)}"
+        return f"**POSCO GPT API 오류:** {str(e)}"
 
 
 # ──────────────────────────────────────────────
@@ -376,8 +389,8 @@ with st.sidebar:
         st.rerun()
 
     # API key warning
-    if not os.environ.get("MY_API_KEY_GOOGLE"):
-        st.warning("Gemini API 키 미설정\n\n`export MY_API_KEY_GOOGLE=키`")
+    if not os.environ.get("POSCO_GPT_KEY"):
+        st.warning("POSCO GPT API 키 미설정\n\n`export POSCO_GPT_KEY=키`")
 
 
 # ──────────────────────────────────────────────
@@ -462,7 +475,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                             seen.add(key)
 
                     full_context = "\n\n---\n\n".join(context_parts)
-                    answer = ask_gemini(full_context, user_question)
+                    answer = ask_posco_gpt(full_context, user_question)
 
                     st.markdown(answer)
 
