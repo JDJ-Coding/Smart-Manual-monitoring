@@ -9,7 +9,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 BASE = os.path.dirname(os.path.abspath(__file__))
 MANUAL_DIR = os.path.join(BASE, "manuals")
 DB_PATH = os.path.join(BASE, "manual_db")
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL = os.path.join(BASE, "model")
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 300
 

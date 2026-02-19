@@ -15,8 +15,10 @@ from langchain_huggingface import HuggingFaceEmbeddings
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "posco")
 POSCO_GPT_URL = "http://aigpt.posco.net/gpgpta01-gpt/gptApi/personalApi"
 POSCO_GPT_MODEL = "gpt-4o"
-EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-" \
-"v2"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EMBEDDING_MODEL = os.path.join(BASE_DIR, "model")
+
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manual_db")
 MANUAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "manuals")
 CHUNK_SIZE = 1200
@@ -283,7 +285,7 @@ def ask_posco_gpt(context: str, user_input: str) -> str:
             "model": POSCO_GPT_MODEL,
         }
         response = requests.post(POSCO_GPT_URL, headers=headers, data=json.dumps(payload))
-        return response.text
+        return response.content.decode("utf-8")
     except Exception as e:
         return f"**POSCO GPT API 오류:** {str(e)}"
 
